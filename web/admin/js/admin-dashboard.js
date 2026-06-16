@@ -138,6 +138,15 @@ function fragmentarBase64(base64String, chunkSize = 307200) {
     return chunks;
 }
 
+function escapeAttr(value) {
+    return String(value ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;');
+}
+
 // ============================================
 // UTILIDAD: RECOMBINAR CHUNKS EN BASE64
 // ============================================
@@ -158,6 +167,44 @@ function obtenerComprobanteDataUrl(pedido) {
     return '';
 }
 
+function parseFecha(valor) {
+    if (!valor) return new Date('Invalid Date');
+    if (typeof valor.toDate === 'function') return valor.toDate();
+    if (typeof valor === 'string') return new Date(valor);
+    if (typeof valor === 'number') return new Date(valor);
+    if (valor.seconds) return new Date(valor.seconds * 1000);
+    return new Date(valor);
+}
+
+function abrirComprobantePedido(pedido) {
+    const dataUrl = obtenerComprobanteDataUrl(pedido);
+    if (!dataUrl) {
+        alert('❌ Este pedido no tiene comprobante para ver');
+        return;
+    }
+
+    const popup = window.open('', '_blank', 'width=980,height=760');
+    if (!popup) {
+        alert('Permite ventanas emergentes para ver el comprobante.');
+        return;
+    }
+
+    popup.document.write(`<!doctype html>
+      <html lang="es">
+      <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Comprobante</title>
+        <style>html,body{margin:0;background:#111;height:100%}body{display:flex;align-items:center;justify-content:center}img{max-width:100%;max-height:100%;object-fit:contain;}</style>
+      </head>
+      <body>
+        <img src="${dataUrl}" alt="Comprobante" />
+      </body>
+      </html>`);
+    popup.document.close();
+    popup.focus();
+}
+
 function descargarComprobantePedido(pedido) {
     const dataUrl = obtenerComprobanteDataUrl(pedido);
     if (!dataUrl) {
@@ -168,9 +215,12 @@ function descargarComprobantePedido(pedido) {
     const link = document.createElement('a');
     link.href = dataUrl;
     link.download = `comprobante-${pedido.id || 'pedido'}.jpg`;
+    document.body.appendChild(link);
     link.click();
+    link.remove();
 }
 
+window.abrirComprobantePedido = abrirComprobantePedido;
 window.descargarComprobantePedido = descargarComprobantePedido;
 
 // ============================================
@@ -803,8 +853,23 @@ async function guardarOrdenTienda() {
             tipo: 'tienda'
         };
 
-        await addDoc(collection(db, 'pedidos_tienda'), orden);
-        generarTicketTienda(orden);
+        const docRef = await addDoc(collection(db, 'pedidos_tienda'), orden);
+        const ordenGuardada = {
+            ...orden,
+            id: docRef.id,
+            fecha: new Date()
+        };
+
+        const printWindow = window.open('', '_blank', 'width=340,height=720');
+        if (!printWindow) {
+            alert('Permite ventanas emergentes para imprimir el ticket.');
+            return;
+        }
+
+        setTimeout(() => {
+            generarTicketTienda(ordenGuardada, printWindow);
+            printWindow.focus();
+        }, 150);
         ordenTiendaActual = [];
         document.getElementById('nombreOrdenTienda').value = '';
         document.getElementById('mesaOrdenTienda').value = '';
@@ -819,48 +884,64 @@ async function guardarOrdenTienda() {
     }
 }
 
-function generarTicketTienda(orden) {
-    const fecha = new Date(orden.fecha?.toDate?.() || orden.fecha).toLocaleString('es-MX');
-    const items = orden.items.map(item => `${item.cantidad}x ${item.nombre}   $${(item.precio * item.cantidad).toFixed(2)}`).join('\n');
+function generarTicketTienda(orden, printWindow = null) {
+    const fecha = parseFecha(orden.fecha);
+    const fechaTexto = isNaN(fecha.getTime()) ? 'Fecha no disponible' : fecha.toLocaleString('es-MX');
+    const items = orden.items
+        .map(item => `${item.cantidad}x ${item.nombre}   $${(item.precio * item.cantidad).toFixed(2)}`)
+        .join('\n');
+
     const html = `
-        <html>
-          <head>
-            <meta charset="utf-8" />
-            <title>Ticket - ${orden.nombre}</title>
-            <style>
-              body { font-family: 'Courier New', monospace; width: 300px; margin: 0; padding: 12px; font-size: 12px; color: #000; }
-              h2 { text-align: center; margin: 4px 0; font-size: 16px; }
-              .center { text-align: center; }
-              hr { border: 1px dashed #000; }
-              .row { display: flex; justify-content: space-between; gap: 8px; }
-              .small { font-size: 11px; }
-            </style>
-          </head>
-          <body>
-            <div class="center"><strong>EDUARDO'S PIZZA</strong></div>
+        <!DOCTYPE html>
+        <html lang="es">
+        <head>
+          <meta charset="UTF-8" />
+          <title>Ticket - ${orden.nombre}</title>
+          <style>
+            @page { size: 80mm auto; margin: 0; }
+            html, body { margin: 0; padding: 0; background: #fff; }
+            body { width: 80mm; font-family: 'Courier New', Courier, monospace; font-size: 12px; color: #000; }
+            .ticket { padding: 10px; box-sizing: border-box; }
+            .center { text-align: center; }
+            .bold { font-weight: 700; }
+            hr { border: 0; border-top: 1px dashed #000; margin: 6px 0; }
+            .row { display: flex; justify-content: space-between; gap: 8px; }
+            .small { font-size: 11px; }
+            pre { margin: 0; white-space: pre-wrap; font-family: 'Courier New', Courier, monospace; font-size: 12px; }
+          </style>
+        </head>
+        <body>
+          <div class="ticket">
+            <div class="center bold">EDUARDO'S PIZZA</div>
             <div class="center small">Orden en tienda</div>
             <hr>
             <div class="small">Cliente: ${orden.nombre}</div>
             <div class="small">Mesa: ${orden.mesa}</div>
-            <div class="small">Fecha: ${fecha}</div>
+            <div class="small">Fecha: ${fechaTexto}</div>
             ${orden.observaciones ? `<div class="small">Obs: ${orden.observaciones}</div>` : ''}
             <hr>
-            <pre style="white-space: pre-wrap; margin: 8px 0; font-family: 'Courier New', monospace; font-size: 12px;">${items}</pre>
+            <pre>${items}</pre>
             <hr>
-            <div class="row"><strong>Total</strong><strong>$${Number(orden.total || 0).toFixed(2)}</strong></div>
+            <div class="row bold"><span>Total</span><span>$${Number(orden.total || 0).toFixed(2)}</span></div>
             <hr>
             <div class="center small">Gracias por su compra</div>
-            <script>window.print(); setTimeout(() => window.close(), 500);</script>
-          </body>
+            <div class="center" style="margin-top: 8px;">
+              <button type="button" onclick="window.print();" style="padding: 6px 10px; font-family: 'Courier New', Courier, monospace; font-size: 11px;">Imprimir ticket</button>
+            </div>
+          </div>
+        </body>
         </html>`;
 
-    const nuevaVentana = window.open('', 'ticket_tienda', 'width=330,height=700,noopener,noreferrer');
-    if (nuevaVentana) {
-        nuevaVentana.document.write(html);
-        nuevaVentana.document.close();
-    } else {
+    const targetWindow = printWindow || window.open('', '_blank', 'width=340,height=720');
+    if (!targetWindow) {
         alert('Permite ventanas emergentes para imprimir el ticket.');
+        return;
     }
+
+    targetWindow.document.open();
+    targetWindow.document.write(html);
+    targetWindow.document.close();
+    targetWindow.focus();
 }
 
 function mostrarOrdenesTienda() {
@@ -875,7 +956,12 @@ function mostrarOrdenesTienda() {
     }
 
     ordenesTienda.forEach(orden => {
-        const fecha = new Date(orden.fecha?.toDate?.() || orden.fecha).toLocaleString('es-MX');
+        const fechaTicket = parseFecha(orden.fecha);
+        const fechaTexto = isNaN(fechaTicket.getTime()) ? 'Fecha no disponible' : fechaTicket.toLocaleString('es-MX');
+        const ordenTicketJson = escapeAttr(JSON.stringify({
+            ...orden,
+            fecha: fechaTicket.toISOString ? fechaTicket.toISOString() : orden.fecha
+        }));
         const itemsHtml = orden.items.map(item => `<div class="pedido-item"><span class="pedido-item-nombre">${item.nombre}</span><span class="pedido-item-cantidad">x${item.cantidad}</span><span class="pedido-item-precio">$${(item.precio * item.cantidad).toFixed(2)}</span></div>`).join('');
 
         const card = document.createElement('div');
@@ -886,18 +972,34 @@ function mostrarOrdenesTienda() {
                 <span class="pedido-estado pendiente">${orden.estado}</span>
             </div>
             <div class="pedido-info">
-                <div class="pedido-detail"><label>Fecha</label><p>${fecha}</p></div>
+                <div class="pedido-detail"><label>Fecha</label><p>${fechaTexto}</p></div>
                 <div class="pedido-detail"><label>Total</label><p style="color:#D01C38;font-weight:bold;">$${Number(orden.total || 0).toFixed(2)}</p></div>
                 ${orden.observaciones ? `<div class="pedido-detail"><label>Observaciones</label><p>${orden.observaciones}</p></div>` : ''}
             </div>
             <div class="pedido-items"><h4>Artículos:</h4>${itemsHtml}<div class="pedido-total">Total: $${Number(orden.total || 0).toFixed(2)}</div></div>
-            <div class="pedido-actions"><button class="btn-primary" type="button" onclick="imprimirTicketTienda(${JSON.stringify(orden)})">Imprimir ticket</button></div>`;
+            <div class="pedido-actions"><button class="btn-primary" type="button" onclick="imprimirTicketTienda(${ordenTicketJson})">Imprimir ticket</button></div>`;
         container.appendChild(card);
     });
 }
 
 function imprimirTicketTienda(orden) {
-    generarTicketTienda(orden);
+    const fecha = parseFecha(orden.fecha);
+    const ordenNormalizada = {
+        ...orden,
+        fecha: fecha && !isNaN(fecha.getTime()) ? fecha : new Date(),
+        total: Number(orden.total || 0)
+    };
+
+    const printWindow = window.open('', '_blank', 'width=340,height=720');
+    if (!printWindow) {
+        alert('Permite ventanas emergentes para imprimir el ticket.');
+        return;
+    }
+
+    setTimeout(() => {
+        generarTicketTienda(ordenNormalizada, printWindow);
+        printWindow.focus();
+    }, 150);
 }
 
 // ============================================
@@ -940,11 +1042,12 @@ async function mostrarPedidos() {
         ).join('');
 
         const comprobanteDataUrl = obtenerComprobanteDataUrl(pedido);
+        const pedidoJson = escapeAttr(JSON.stringify(pedido));
         const comprobanteHTML = comprobanteDataUrl
             ? `<div class="pedido-comprobante"><p><strong>Comprobante:</strong></p>
                 <div style="display:flex; gap: 0.75rem; flex-wrap: wrap;">
-                    <a href="${comprobanteDataUrl}" target="_blank" class="btn-secondary">Ver</a>
-                    <button type="button" class="btn-primary" onclick="window.descargarComprobantePedido(${JSON.stringify(pedido)})">Descargar</button>
+                    <button type="button" class="btn-secondary" onclick="window.abrirComprobantePedido(${pedidoJson})">Ver</button>
+                    <button type="button" class="btn-primary" onclick="window.descargarComprobantePedido(${pedidoJson})">Descargar</button>
                 </div></div>`
             : '';
 
@@ -997,7 +1100,7 @@ async function mostrarPedidos() {
             </div>
             ${comprobanteHTML}
             <div class="pedido-actions">
-                <button class="btn-secondary" onclick="mostrarMapaAdmin('${pedido.id}', '${pedido.direccion}', '${pedido.nombre}', ${pedido.ubicacionCliente?.lat || 'null'}, ${pedido.ubicacionCliente?.lng || 'null'})">📍 Ver Mapa</button>
+                <button class="btn-secondary" onclick="mostrarMapaAdmin('${escapeAttr(pedido.id)}', '${escapeAttr(pedido.direccion)}', '${escapeAttr(pedido.nombre)}', ${pedido.ubicacionCliente?.lat ?? 'null'}, ${pedido.ubicacionCliente?.lng ?? 'null'})">📍 Ver Mapa</button>
                 <button class="btn-secondary" onclick="cambiarEstadoPedido('${pedido.id}', 'visto')">Marcar Visto</button>
                 <button class="btn-secondary" onclick="cambiarEstadoPedido('${pedido.id}', 'preparacion')">En Preparación</button>
                 <button class="btn-secondary" onclick="cambiarEstadoPedido('${pedido.id}', 'camino')">En Camino</button>

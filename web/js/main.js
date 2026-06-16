@@ -72,6 +72,41 @@ function fragmentarBase64(base64String, chunkSize = 307200) {
     return chunks;
 }
 
+async function pdfToImage(file) {
+    try {
+        const arrayBuffer = await file.arrayBuffer();
+        const pdf = await pdfjsLib.getDocument(arrayBuffer).promise;
+        const totalPages = pdf.numPages;
+        const scale = 1.5;
+        const firstPage = await pdf.getPage(1);
+        const viewport = firstPage.getViewport({ scale });
+
+        const totalCanvas = document.createElement('canvas');
+        totalCanvas.width = viewport.width;
+        totalCanvas.height = viewport.height * totalPages;
+
+        const totalContext = totalCanvas.getContext('2d');
+        totalContext.fillStyle = 'white';
+        totalContext.fillRect(0, 0, totalCanvas.width, totalCanvas.height);
+
+        for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
+            const page = await pdf.getPage(pageNum);
+            const pageViewport = page.getViewport({ scale });
+            const pageCanvas = document.createElement('canvas');
+            pageCanvas.width = pageViewport.width;
+            pageCanvas.height = pageViewport.height;
+            const pageContext = pageCanvas.getContext('2d');
+            await page.render({ canvasContext: pageContext, viewport: pageViewport }).promise;
+            totalContext.drawImage(pageCanvas, 0, (pageNum - 1) * pageViewport.height);
+        }
+
+        return totalCanvas.toDataURL('image/jpeg', 0.7);
+    } catch (error) {
+        console.error('Error al convertir PDF a imagen:', error);
+        throw new Error('No se pudo convertir el PDF a imagen: ' + error.message);
+    }
+}
+
 function recombinarChunks(chunks) {
     return Array.isArray(chunks) && chunks.length ? chunks.join('') : '';
 }
@@ -86,6 +121,44 @@ function obtenerComprobanteDataUrl(pedido) {
     return '';
 }
 
+function escapeAttr(value) {
+    return String(value ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;');
+}
+
+function abrirComprobante(pedido) {
+    const dataUrl = obtenerComprobanteDataUrl(pedido);
+    if (!dataUrl) {
+        alert('❌ Este pedido no tiene un comprobante para ver');
+        return;
+    }
+
+    const popup = window.open('', '_blank', 'width=980,height=760');
+    if (!popup) {
+        alert('Permite ventanas emergentes para ver el comprobante.');
+        return;
+    }
+
+    popup.document.write(`<!doctype html>
+      <html lang="es">
+      <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Comprobante</title>
+        <style>html,body{margin:0;background:#111;height:100%}body{display:flex;align-items:center;justify-content:center}img{max-width:100%;max-height:100%;object-fit:contain;}</style>
+      </head>
+      <body>
+        <img src="${dataUrl}" alt="Comprobante" />
+      </body>
+      </html>`);
+    popup.document.close();
+    popup.focus();
+}
+
 function descargarComprobante(pedido) {
     const dataUrl = obtenerComprobanteDataUrl(pedido);
     if (!dataUrl) {
@@ -96,9 +169,12 @@ function descargarComprobante(pedido) {
     const link = document.createElement('a');
     link.href = dataUrl;
     link.download = `comprobante-${pedido.id || 'pedido'}.jpg`;
+    document.body.appendChild(link);
     link.click();
+    link.remove();
 }
 
+window.abrirComprobante = abrirComprobante;
 window.descargarComprobante = descargarComprobante;
 
 // ============================================
@@ -822,16 +898,14 @@ async function realizarPedido(e) {
                 return;
             }
 
-            const maxSize = 10 * 1024 * 1024;
-            if (archivoComprobante.size > maxSize) {
-                alert('❌ El comprobante debe ser menor a 10MB');
-                return;
-            }
+            const esPdf = archivoComprobante.type === 'application/pdf' || archivoComprobante.name.toLowerCase().endsWith('.pdf');
+            const comprobanteBase64 = esPdf
+                ? await pdfToImage(archivoComprobante)
+                : await compresarImagen(archivoComprobante);
 
-            const comprobanteBase64 = await compresarImagen(archivoComprobante);
             comprobante = comprobanteBase64;
             comprobanteChunks = fragmentarBase64(comprobanteBase64);
-            console.log('✅ Comprobante convertido a base64 y fragmentado:', comprobanteChunks.length, 'chunks');
+            console.log('✅ Comprobante convertido a texto (base64) y fragmentado:', comprobanteChunks.length, 'chunks');
         } else {
             console.log('💵 Método: Efectivo en Domicilio');
         }
@@ -1125,10 +1199,11 @@ function cargarMisPedidos() {
         }).join('');
         
         const comprobanteDataUrl = obtenerComprobanteDataUrl(pedido);
+        const pedidoJson = escapeAttr(JSON.stringify(pedido));
         const comprobanteHtml = comprobanteDataUrl
             ? `<div class="pedido-comprobante" style="margin-top: 0.75rem; display:flex; gap: 0.75rem; flex-wrap: wrap;">
-                    <a href="${comprobanteDataUrl}" target="_blank" class="btn-secondary">Ver comprobante</a>
-                    <button type="button" class="btn-primary" onclick="window.descargarComprobante(${JSON.stringify(pedido)})">Descargar comprobante</button>
+                    <button type="button" class="btn-secondary" onclick="window.abrirComprobante(${pedidoJson})">Ver comprobante</button>
+                    <button type="button" class="btn-primary" onclick="window.descargarComprobante(${pedidoJson})">Descargar comprobante</button>
                 </div>`
             : '';
 
@@ -1173,7 +1248,7 @@ function cargarMisPedidos() {
             ${comprobanteHtml}
             <div style="display: flex; justify-content: space-between; align-items: center; gap: 1rem; margin-top: 1rem;">
                 <div class="pedido-total">Total: $${pedido.total.toFixed(2)}</div>
-                <button class="btn-ver-detalle" onclick="window.mostrarMapa('${pedido.direccion.replace(/'/g, "\\'")}', '${pedido.nombre.replace(/'/g, "\\'")}', ${pedido.ubicacionCliente?.lat || 'null'}, ${pedido.ubicacionCliente?.lng || 'null'}, '${pedido.id}')">
+                <button class="btn-ver-detalle" onclick="window.mostrarMapa('${escapeAttr(pedido.direccion)}', '${escapeAttr(pedido.nombre)}', ${pedido.ubicacionCliente?.lat ?? 'null'}, ${pedido.ubicacionCliente?.lng ?? 'null'}, '${escapeAttr(pedido.id)}')">
                     📍 Ver Mapa
                 </button>
             </div>
