@@ -5,6 +5,8 @@ let usuarioActual = null;
 let productos = [];
 let pedidos = [];
 let comentarios = [];
+let ordenesTienda = [];
+let ordenTiendaActual = [];
 let menus = [];
 let galeria = [];
 let productoEditando = null;
@@ -146,6 +148,31 @@ function recombinarChunks(chunks) {
     return chunks.join('');
 }
 
+function obtenerComprobanteDataUrl(pedido) {
+    if (Array.isArray(pedido?.comprobanteChunks) && pedido.comprobanteChunks.length) {
+        return recombinarChunks(pedido.comprobanteChunks);
+    }
+    if (typeof pedido?.comprobante === 'string' && pedido.comprobante) {
+        return pedido.comprobante;
+    }
+    return '';
+}
+
+function descargarComprobantePedido(pedido) {
+    const dataUrl = obtenerComprobanteDataUrl(pedido);
+    if (!dataUrl) {
+        alert('❌ Este pedido no tiene comprobante para descargar');
+        return;
+    }
+
+    const link = document.createElement('a');
+    link.href = dataUrl;
+    link.download = `comprobante-${pedido.id || 'pedido'}.jpg`;
+    link.click();
+}
+
+window.descargarComprobantePedido = descargarComprobantePedido;
+
 // ============================================
 async function inicializarFirebase() {
     try {
@@ -218,6 +245,9 @@ function cambiarSeccion(seccion) {
         actualizarDashboard();
     } else if (seccion === 'productos') {
         mostrarProductos();
+    } else if (seccion === 'ordenes_tienda') {
+        mostrarProductosOrdenTienda();
+        mostrarOrdenesTienda();
     } else if (seccion === 'pedidos') {
         mostrarPedidos();
     } else if (seccion === 'menus') {
@@ -251,9 +281,20 @@ async function cargarDatos() {
 
         // Cargar pedidos
         const pedidosSnap = await getDocs(query(collection(db, 'pedidos'), orderBy('fecha', 'desc')));
+
+        // Cargar órdenes en tienda
+        const ordenesTiendaSnap = await getDocs(query(collection(db, 'pedidos_tienda'), orderBy('fecha', 'desc')));
         pedidos = [];
         pedidosSnap.forEach(doc => {
             pedidos.push({
+                id: doc.id,
+                ...doc.data()
+            });
+        });
+
+        ordenesTienda = [];
+        ordenesTiendaSnap.forEach(doc => {
+            ordenesTienda.push({
                 id: doc.id,
                 ...doc.data()
             });
@@ -503,6 +544,16 @@ function setupFormularios() {
     // Filtros de pedidos
     document.getElementById('buscarPedido').addEventListener('input', mostrarPedidos);
     document.getElementById('filtroEstado').addEventListener('change', mostrarPedidos);
+
+    document.getElementById('btnNuevaOrdenTienda').addEventListener('click', () => {
+        ordenTiendaActual = [];
+        document.getElementById('nombreOrdenTienda').value = '';
+        document.getElementById('mesaOrdenTienda').value = '';
+        document.getElementById('observacionesOrdenTienda').value = '';
+        actualizarResumenOrdenTienda();
+    });
+
+    document.getElementById('btnGuardarOrdenTienda').addEventListener('click', guardarOrdenTienda);
 }
 
 async function guardarProducto(e) {
@@ -636,6 +687,220 @@ async function eliminarProducto(productoId) {
 }
 
 // ============================================
+// ORDENES EN TIENDA
+// ============================================
+
+function mostrarProductosOrdenTienda() {
+    const container = document.getElementById('listaProductosTienda');
+    if (!container) return;
+
+    container.innerHTML = '';
+
+    if (!productos.length) {
+        container.innerHTML = '<p style="text-align: center; color: #202020;">No hay productos disponibles.</p>';
+        return;
+    }
+
+    productos.forEach(producto => {
+        const card = document.createElement('div');
+        card.className = 'producto-admin-card';
+        const imagenBase64 = producto.imagenChunks ? producto.imagenChunks.join('') : producto.imagen;
+
+        card.innerHTML = `
+            <div class="producto-admin-img">${imagenBase64 ? `<img src="${imagenBase64}" alt="${producto.nombre}" style="width:100%;height:100%;object-fit:cover;">` : '🍕'}</div>
+            <div class="producto-admin-info">
+                <div class="producto-admin-nombre">${producto.nombre}</div>
+                <div class="producto-admin-precio">$${Number(producto.precio || 0).toFixed(2)}</div>
+                <div style="display:flex; gap:0.5rem; align-items:center; margin-top:0.5rem;">
+                    <input type="number" min="1" value="1" id="cantidad-${producto.id}" style="width: 60px; padding: 0.45rem; border: 1px solid #ddd; border-radius: 8px;">
+                    <button type="button" class="btn-primary" onclick="agregarProductoOrdenTienda('${producto.id}')">Agregar</button>
+                </div>
+            </div>`;
+        container.appendChild(card);
+    });
+}
+
+function agregarProductoOrdenTienda(productoId) {
+    const producto = productos.find(item => item.id === productoId);
+    if (!producto) return;
+
+    const cantidadInput = document.getElementById(`cantidad-${productoId}`);
+    const cantidad = Math.max(1, parseInt(cantidadInput?.value || '1', 10) || 1);
+
+    const itemExistente = ordenTiendaActual.find(item => item.id === productoId);
+    if (itemExistente) {
+        itemExistente.cantidad += cantidad;
+    } else {
+        ordenTiendaActual.push({
+            id: producto.id,
+            nombre: producto.nombre,
+            precio: Number(producto.precio || 0),
+            cantidad
+        });
+    }
+
+    actualizarResumenOrdenTienda();
+}
+
+function actualizarResumenOrdenTienda() {
+    const resumen = document.getElementById('resumenOrdenTienda');
+    const total = document.getElementById('totalOrdenTienda');
+    if (!resumen || !total) return;
+
+    if (!ordenTiendaActual.length) {
+        resumen.innerHTML = '<p style="color:#5f6368;">Aún no hay productos seleccionados.</p>';
+        total.textContent = '0.00';
+        return;
+    }
+
+    const subtotal = ordenTiendaActual.reduce((sum, item) => sum + item.precio * item.cantidad, 0);
+    total.textContent = subtotal.toFixed(2);
+
+    resumen.innerHTML = ordenTiendaActual.map(item => `
+        <div style="display:flex; justify-content:space-between; gap:0.75rem; padding:0.45rem 0; border-bottom:1px solid #f0f0f0;">
+            <div>
+                <strong>${item.nombre}</strong><br>
+                <small style="color:#5f6368;">x${item.cantidad} · $${item.precio.toFixed(2)} c/u</small>
+            </div>
+            <button type="button" class="btn-danger" onclick="quitarProductoOrdenTienda('${item.id}')" style="padding:0.35rem 0.5rem; font-size:0.9rem;">Quitar</button>
+        </div>
+    `).join('');
+}
+
+function quitarProductoOrdenTienda(productoId) {
+    ordenTiendaActual = ordenTiendaActual.filter(item => item.id !== productoId);
+    actualizarResumenOrdenTienda();
+}
+
+async function guardarOrdenTienda() {
+    if (!ordenTiendaActual.length) {
+        alert('Selecciona al menos un producto para la orden.');
+        return;
+    }
+
+    const nombreCliente = document.getElementById('nombreOrdenTienda')?.value.trim();
+    const mesa = document.getElementById('mesaOrdenTienda')?.value.trim();
+    const observaciones = document.getElementById('observacionesOrdenTienda')?.value.trim();
+
+    if (!nombreCliente || !mesa) {
+        alert('Escribe el nombre del cliente y el número de mesa para continuar.');
+        return;
+    }
+
+    try {
+        const { collection, addDoc } = await import('https://www.gstatic.com/firebasejs/10.14.0/firebase-firestore.js');
+        const total = ordenTiendaActual.reduce((sum, item) => sum + item.precio * item.cantidad, 0);
+
+        const orden = {
+            nombre: nombreCliente,
+            mesa,
+            observaciones: observaciones || '',
+            items: ordenTiendaActual,
+            total,
+            estado: 'pendiente',
+            metodoPago: 'en_tienda',
+            fecha: new Date(),
+            tipo: 'tienda'
+        };
+
+        await addDoc(collection(db, 'pedidos_tienda'), orden);
+        generarTicketTienda(orden);
+        ordenTiendaActual = [];
+        document.getElementById('nombreOrdenTienda').value = '';
+        document.getElementById('mesaOrdenTienda').value = '';
+        document.getElementById('observacionesOrdenTienda').value = '';
+        actualizarResumenOrdenTienda();
+        await cargarDatos();
+        mostrarOrdenesTienda();
+        alert('✅ Orden registrada correctamente.');
+    } catch (error) {
+        console.error('Error guardando orden en tienda:', error);
+        alert('❌ No se pudo guardar la orden: ' + error.message);
+    }
+}
+
+function generarTicketTienda(orden) {
+    const fecha = new Date(orden.fecha?.toDate?.() || orden.fecha).toLocaleString('es-MX');
+    const items = orden.items.map(item => `${item.cantidad}x ${item.nombre}   $${(item.precio * item.cantidad).toFixed(2)}`).join('\n');
+    const html = `
+        <html>
+          <head>
+            <meta charset="utf-8" />
+            <title>Ticket - ${orden.nombre}</title>
+            <style>
+              body { font-family: 'Courier New', monospace; width: 300px; margin: 0; padding: 12px; font-size: 12px; color: #000; }
+              h2 { text-align: center; margin: 4px 0; font-size: 16px; }
+              .center { text-align: center; }
+              hr { border: 1px dashed #000; }
+              .row { display: flex; justify-content: space-between; gap: 8px; }
+              .small { font-size: 11px; }
+            </style>
+          </head>
+          <body>
+            <div class="center"><strong>EDUARDO'S PIZZA</strong></div>
+            <div class="center small">Orden en tienda</div>
+            <hr>
+            <div class="small">Cliente: ${orden.nombre}</div>
+            <div class="small">Mesa: ${orden.mesa}</div>
+            <div class="small">Fecha: ${fecha}</div>
+            ${orden.observaciones ? `<div class="small">Obs: ${orden.observaciones}</div>` : ''}
+            <hr>
+            <pre style="white-space: pre-wrap; margin: 8px 0; font-family: 'Courier New', monospace; font-size: 12px;">${items}</pre>
+            <hr>
+            <div class="row"><strong>Total</strong><strong>$${Number(orden.total || 0).toFixed(2)}</strong></div>
+            <hr>
+            <div class="center small">Gracias por su compra</div>
+            <script>window.print(); setTimeout(() => window.close(), 500);</script>
+          </body>
+        </html>`;
+
+    const nuevaVentana = window.open('', 'ticket_tienda', 'width=330,height=700,noopener,noreferrer');
+    if (nuevaVentana) {
+        nuevaVentana.document.write(html);
+        nuevaVentana.document.close();
+    } else {
+        alert('Permite ventanas emergentes para imprimir el ticket.');
+    }
+}
+
+function mostrarOrdenesTienda() {
+    const container = document.getElementById('listaOrdenesTienda');
+    if (!container) return;
+
+    container.innerHTML = '';
+
+    if (!ordenesTienda.length) {
+        container.innerHTML = '<p style="text-align: center; color: #202020;">No hay órdenes en tienda aún.</p>';
+        return;
+    }
+
+    ordenesTienda.forEach(orden => {
+        const fecha = new Date(orden.fecha?.toDate?.() || orden.fecha).toLocaleString('es-MX');
+        const itemsHtml = orden.items.map(item => `<div class="pedido-item"><span class="pedido-item-nombre">${item.nombre}</span><span class="pedido-item-cantidad">x${item.cantidad}</span><span class="pedido-item-precio">$${(item.precio * item.cantidad).toFixed(2)}</span></div>`).join('');
+
+        const card = document.createElement('div');
+        card.className = 'pedido-card pendiente';
+        card.innerHTML = `
+            <div class="pedido-header">
+                <div class="pedido-id">${orden.nombre} · Mesa ${orden.mesa}</div>
+                <span class="pedido-estado pendiente">${orden.estado}</span>
+            </div>
+            <div class="pedido-info">
+                <div class="pedido-detail"><label>Fecha</label><p>${fecha}</p></div>
+                <div class="pedido-detail"><label>Total</label><p style="color:#D01C38;font-weight:bold;">$${Number(orden.total || 0).toFixed(2)}</p></div>
+                ${orden.observaciones ? `<div class="pedido-detail"><label>Observaciones</label><p>${orden.observaciones}</p></div>` : ''}
+            </div>
+            <div class="pedido-items"><h4>Artículos:</h4>${itemsHtml}<div class="pedido-total">Total: $${Number(orden.total || 0).toFixed(2)}</div></div>
+            <div class="pedido-actions"><button class="btn-primary" type="button" onclick="imprimirTicketTienda(${JSON.stringify(orden)})">Imprimir ticket</button></div>`;
+        container.appendChild(card);
+    });
+}
+
+function imprimirTicketTienda(orden) {
+    generarTicketTienda(orden);
+}
+
+// ============================================
 // PEDIDOS
 // ============================================
 
@@ -674,6 +939,15 @@ async function mostrarPedidos() {
             </div>`
         ).join('');
 
+        const comprobanteDataUrl = obtenerComprobanteDataUrl(pedido);
+        const comprobanteHTML = comprobanteDataUrl
+            ? `<div class="pedido-comprobante"><p><strong>Comprobante:</strong></p>
+                <div style="display:flex; gap: 0.75rem; flex-wrap: wrap;">
+                    <a href="${comprobanteDataUrl}" target="_blank" class="btn-secondary">Ver</a>
+                    <button type="button" class="btn-primary" onclick="window.descargarComprobantePedido(${JSON.stringify(pedido)})">Descargar</button>
+                </div></div>`
+            : '';
+
         const card = document.createElement('div');
         card.className = `pedido-card ${pedido.estado}`;
 
@@ -695,6 +969,10 @@ async function mostrarPedidos() {
                     <label>Dirección</label>
                     <p>${pedido.direccion}</p>
                 </div>
+                ${pedido.especialidad ? `<div class="pedido-detail">
+                    <label>¿Qué especialidad?</label>
+                    <p>${pedido.especialidad}</p>
+                </div>` : ''}
                 <div class="pedido-detail">
                     <label>Ubicación GPS</label>
                     <p>${pedido.ubicacionCliente ? `📍 ${pedido.ubicacionCliente.lat?.toFixed(4)}, ${pedido.ubicacionCliente.lng?.toFixed(4)}` : '⚠️ No disponible'}</p>
@@ -717,7 +995,7 @@ async function mostrarPedidos() {
                 ${itemsHTML}
                 <div class="pedido-total">Total: $${pedido.total?.toFixed(2)}</div>
             </div>
-            ${pedido.comprobante ? `<div class="pedido-comprobante"><p><strong>Comprobante:</strong> <a href="${pedido.comprobante}" target="_blank">Ver</a></p></div>` : ''}
+            ${comprobanteHTML}
             <div class="pedido-actions">
                 <button class="btn-secondary" onclick="mostrarMapaAdmin('${pedido.id}', '${pedido.direccion}', '${pedido.nombre}', ${pedido.ubicacionCliente?.lat || 'null'}, ${pedido.ubicacionCliente?.lng || 'null'})">📍 Ver Mapa</button>
                 <button class="btn-secondary" onclick="cambiarEstadoPedido('${pedido.id}', 'visto')">Marcar Visto</button>
@@ -1517,6 +1795,9 @@ async function eliminarImagenSobre() {
 window.cambiarSeccion = cambiarSeccion;
 window.editarProducto = editarProducto;
 window.eliminarProducto = eliminarProducto;
+window.agregarProductoOrdenTienda = agregarProductoOrdenTienda;
+window.quitarProductoOrdenTienda = quitarProductoOrdenTienda;
+window.imprimirTicketTienda = imprimirTicketTienda;
 window.cambiarEstadoPedido = cambiarEstadoPedido;
 window.eliminarPedido = eliminarPedido;
 window.mostrarMapaAdmin = mostrarMapaAdmin;

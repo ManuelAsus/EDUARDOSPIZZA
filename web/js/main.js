@@ -1,5 +1,5 @@
 // Importar Firebase
-import { db, storage } from './firebase-config.js';
+import { db } from './firebase-config.js';
 import { 
     collection, 
     getDocs, 
@@ -13,11 +13,6 @@ import {
     orderBy,
     onSnapshot
 } from "https://www.gstatic.com/firebasejs/10.14.0/firebase-firestore.js";
-import { 
-    ref, 
-    uploadBytes, 
-    getDownloadURL 
-} from "https://www.gstatic.com/firebasejs/10.14.0/firebase-storage.js";
 
 // ============================================
 // VARIABLES GLOBALES
@@ -29,6 +24,82 @@ let comentarios = [];
 let menus = [];
 let galeria = [];
 let listenerPedidosActivo = false;
+
+function fileToBase64(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.readAsDataURL(file);
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = error => reject(error);
+    });
+}
+
+function compresarImagen(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.readAsDataURL(file);
+        reader.onload = (e) => {
+            const img = new Image();
+            img.onload = () => {
+                const canvas = document.createElement('canvas');
+                let width = img.width;
+                let height = img.height;
+                const maxWidth = 1920;
+                const maxHeight = 1920;
+                if (width > maxWidth || height > maxHeight) {
+                    const ratio = Math.min(maxWidth / width, maxHeight / height);
+                    width = width * ratio;
+                    height = height * ratio;
+                }
+                canvas.width = width;
+                canvas.height = height;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(img, 0, 0, width, height);
+                resolve(canvas.toDataURL('image/jpeg', 0.7));
+            };
+            img.onerror = () => reject(new Error('No se pudo cargar la imagen'));
+            img.src = e.target.result;
+        };
+        reader.onerror = error => reject(error);
+    });
+}
+
+function fragmentarBase64(base64String, chunkSize = 307200) {
+    const chunks = [];
+    for (let i = 0; i < base64String.length; i += chunkSize) {
+        chunks.push(base64String.slice(i, i + chunkSize));
+    }
+    return chunks;
+}
+
+function recombinarChunks(chunks) {
+    return Array.isArray(chunks) && chunks.length ? chunks.join('') : '';
+}
+
+function obtenerComprobanteDataUrl(pedido) {
+    if (Array.isArray(pedido?.comprobanteChunks) && pedido.comprobanteChunks.length) {
+        return recombinarChunks(pedido.comprobanteChunks);
+    }
+    if (typeof pedido?.comprobante === 'string' && pedido.comprobante) {
+        return pedido.comprobante;
+    }
+    return '';
+}
+
+function descargarComprobante(pedido) {
+    const dataUrl = obtenerComprobanteDataUrl(pedido);
+    if (!dataUrl) {
+        alert('❌ Este pedido no tiene un comprobante para descargar');
+        return;
+    }
+
+    const link = document.createElement('a');
+    link.href = dataUrl;
+    link.download = `comprobante-${pedido.id || 'pedido'}.jpg`;
+    link.click();
+}
+
+window.descargarComprobante = descargarComprobante;
 
 // ============================================
 // INICIALIZAR APLICACIÓN
@@ -228,6 +299,7 @@ function setupEventListeners() {
     // Guardar estado cuando se cambian los campos del formulario
     document.getElementById('nombrePedido').addEventListener('input', guardarEstadoCheckout);
     document.getElementById('telefonoPedido').addEventListener('input', guardarEstadoCheckout);
+    document.getElementById('especialidadPedido').addEventListener('input', guardarEstadoCheckout);
     document.getElementById('direccionPedido').addEventListener('input', guardarEstadoCheckout);
 
     // Cerrar modales
@@ -680,6 +752,7 @@ async function realizarPedido(e) {
 
     const nombre = document.getElementById('nombrePedido').value.trim();
     const telefono = document.getElementById('telefonoPedido').value.trim();
+    const especialidad = document.getElementById('especialidadPedido').value.trim();
     const direccion = document.getElementById('direccionPedido').value.trim();
     const metodoPago = document.getElementById('metodoPago').value;
     
@@ -738,29 +811,27 @@ async function realizarPedido(e) {
 
     try {
         let comprobante = null;
+        let comprobanteChunks = null;
 
-        // Si es transferencia, validar comprobante
         if (metodoPago === 'transferencia') {
-            console.log('💳 Método: Transferencia Bancaria - buscando comprobante...');
+            console.log('💳 Método: Transferencia Bancaria - preparando comprobante...');
             const archivoComprobante = document.getElementById('archivoComprobante').files[0];
-            
+
             if (!archivoComprobante) {
                 alert('❌ Debes subir un comprobante de pago para transferencia');
                 return;
             }
 
-            // Validar tamaño del archivo (máximo 10MB)
-            const maxSize = 10 * 1024 * 1024; // 10MB
+            const maxSize = 10 * 1024 * 1024;
             if (archivoComprobante.size > maxSize) {
                 alert('❌ El comprobante debe ser menor a 10MB');
                 return;
             }
 
-            console.log('📤 Subiendo comprobante:', archivoComprobante.name);
-            const storageRef = ref(storage, `comprobantes/${Date.now()}_${archivoComprobante.name}`);
-            await uploadBytes(storageRef, archivoComprobante);
-            comprobante = await getDownloadURL(storageRef);
-            console.log('✅ Comprobante subido:', comprobante);
+            const comprobanteBase64 = await compresarImagen(archivoComprobante);
+            comprobante = comprobanteBase64;
+            comprobanteChunks = fragmentarBase64(comprobanteBase64);
+            console.log('✅ Comprobante convertido a base64 y fragmentado:', comprobanteChunks.length, 'chunks');
         } else {
             console.log('💵 Método: Efectivo en Domicilio');
         }
@@ -779,9 +850,11 @@ async function realizarPedido(e) {
         const pedidoDoc = await addDoc(collection(db, 'pedidos'), {
             nombre: nombre,
             telefono: telefono,
+            especialidad: especialidad || '',
             direccion: direccion,
             metodoPago: metodoPago,
             comprobante: comprobante,
+            comprobanteChunks: comprobanteChunks,
             items: carrito,
             total: total,
             estado: 'pendiente',
@@ -801,14 +874,16 @@ async function realizarPedido(e) {
             id: pedidoDoc.id,
             nombre: nombre,
             telefono: telefono,
+            especialidad: especialidad || '',
             direccion: direccion,
             metodoPago: metodoPago,
-            items: carrito,  // Copiar array completo
+            items: carrito,
             total: total,
             estado: 'pendiente',
             fecha: fechaActual.toISOString(),
             fechaFormato: fechaActual.toLocaleString('es-MX'),
             comprobante: comprobante,
+            comprobanteChunks: comprobanteChunks,
             ubicacionCliente: ubicacionFirestore,
             repartidorUbicacion: null,
             repartidorNombre: null
@@ -855,6 +930,7 @@ function guardarEstadoCheckout() {
         modalAbierto: true,
         nombrePedido: document.getElementById('nombrePedido').value,
         telefonoPedido: document.getElementById('telefonoPedido').value,
+        especialidadPedido: document.getElementById('especialidadPedido').value,
         direccionPedido: document.getElementById('direccionPedido').value,
         metodoPago: document.getElementById('metodoPago').value,
         timestamp: Date.now()
@@ -876,6 +952,9 @@ function restaurarEstadoCheckout() {
             }
             if (estado.telefonoPedido) {
                 document.getElementById('telefonoPedido').value = estado.telefonoPedido;
+            }
+            if (estado.especialidadPedido !== undefined) {
+                document.getElementById('especialidadPedido').value = estado.especialidadPedido;
             }
             if (estado.direccionPedido) {
                 document.getElementById('direccionPedido').value = estado.direccionPedido;
@@ -1045,6 +1124,14 @@ function cargarMisPedidos() {
             `;
         }).join('');
         
+        const comprobanteDataUrl = obtenerComprobanteDataUrl(pedido);
+        const comprobanteHtml = comprobanteDataUrl
+            ? `<div class="pedido-comprobante" style="margin-top: 0.75rem; display:flex; gap: 0.75rem; flex-wrap: wrap;">
+                    <a href="${comprobanteDataUrl}" target="_blank" class="btn-secondary">Ver comprobante</a>
+                    <button type="button" class="btn-primary" onclick="window.descargarComprobante(${JSON.stringify(pedido)})">Descargar comprobante</button>
+                </div>`
+            : '';
+
         const div = document.createElement('div');
         div.className = 'pedido-item';
         div.setAttribute('data-pedido-id', pedido.id);
@@ -1072,6 +1159,10 @@ function cargarMisPedidos() {
                     <span class="pedido-detalle-label">Dirección:</span>
                     ${pedido.direccion}
                 </div>
+                ${pedido.especialidad ? `<div class="pedido-detalle">
+                    <span class="pedido-detalle-label">¿Qué especialidad?</span>
+                    ${pedido.especialidad}
+                </div>` : ''}
             </div>
             
             <div class="pedido-items">
@@ -1079,6 +1170,7 @@ function cargarMisPedidos() {
                 ${itemsHtml}
             </div>
             
+            ${comprobanteHtml}
             <div style="display: flex; justify-content: space-between; align-items: center; gap: 1rem; margin-top: 1rem;">
                 <div class="pedido-total">Total: $${pedido.total.toFixed(2)}</div>
                 <button class="btn-ver-detalle" onclick="window.mostrarMapa('${pedido.direccion.replace(/'/g, "\\'")}', '${pedido.nombre.replace(/'/g, "\\'")}', ${pedido.ubicacionCliente?.lat || 'null'}, ${pedido.ubicacionCliente?.lng || 'null'}, '${pedido.id}')">

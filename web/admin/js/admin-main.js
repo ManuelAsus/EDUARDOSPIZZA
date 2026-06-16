@@ -33,6 +33,31 @@ let seccionActiva = 'dashboard';
 let pedidoSeleccionado = null;
 let productos = [];
 let pedidos = [];
+
+function obtenerComprobanteDataUrl(pedido) {
+    if (Array.isArray(pedido?.comprobanteChunks) && pedido.comprobanteChunks.length) {
+        return pedido.comprobanteChunks.join('');
+    }
+    if (typeof pedido?.comprobante === 'string' && pedido.comprobante) {
+        return pedido.comprobante;
+    }
+    return '';
+}
+
+function descargarComprobantePedido(pedido) {
+    const dataUrl = obtenerComprobanteDataUrl(pedido);
+    if (!dataUrl) {
+        alert('❌ Este pedido no tiene comprobante para descargar');
+        return;
+    }
+
+    const link = document.createElement('a');
+    link.href = dataUrl;
+    link.download = `comprobante-${pedido.id || 'pedido'}.jpg`;
+    link.click();
+}
+
+window.descargarComprobantePedido = descargarComprobantePedido;
 let comentarios = [];
 let productoEditando = null;
 
@@ -313,12 +338,16 @@ async function mostrarPedidos() {
             </div>`
         ).join('');
 
+        const comprobanteDataUrl = obtenerComprobanteDataUrl(pedido);
         let comprobanteHTML = '';
-        if (pedido.comprobante) {
+        if (comprobanteDataUrl) {
             comprobanteHTML = `
                 <div class="pedido-comprobante">
                     <p><strong>Comprobante de Pago:</strong></p>
-                    <a href="${pedido.comprobante}" target="_blank" class="btn-secondary">Ver Comprobante</a>
+                    <div style="display:flex; gap: 0.75rem; flex-wrap: wrap;">
+                        <a href="${comprobanteDataUrl}" target="_blank" class="btn-secondary">Ver Comprobante</a>
+                        <button type="button" class="btn-primary" onclick="window.descargarComprobantePedido(${JSON.stringify(pedido)})">Descargar Comprobante</button>
+                    </div>
                 </div>
             `;
         }
@@ -341,6 +370,10 @@ async function mostrarPedidos() {
                     <label>Dirección</label>
                     <p>${pedido.direccion}</p>
                 </div>
+                ${pedido.especialidad ? `<div class="pedido-detail">
+                    <label>¿Qué especialidad?</label>
+                    <p>${pedido.especialidad}</p>
+                </div>` : ''}
                 <div class="pedido-detail">
                     <label>Método de Pago</label>
                     <p>${pedido.metodoPago === 'transferencia' ? 'Transferencia' : 'Efectivo'}</p>
